@@ -449,9 +449,10 @@ pub(crate) fn decode_text(bytes: &[u8]) -> Result<(String, TextEncoding), String
     let (encoding, bom) = match encoding_rs::Encoding::for_bom(bytes) {
         Some((enc, _)) => (enc, true),
         None => {
-            let mut detector = chardetng::EncodingDetector::new();
+            let mut detector =
+                chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
             detector.feed(bytes, true);
-            (detector.guess(None, true), false)
+            (detector.guess(None, chardetng::Utf8Detection::Allow), false)
         }
     };
     let (text, _, had_errors) = encoding.decode(bytes);

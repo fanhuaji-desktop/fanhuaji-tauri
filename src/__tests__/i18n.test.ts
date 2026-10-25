@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getLocale, initI18n, setLocale, t, translateError, translatePage } from "../i18n/i18n";
+import en from "../i18n/locales/en.json";
+import zhCN from "../i18n/locales/zh-CN.json";
+import zhTW from "../i18n/locales/zh-TW.json";
 
 beforeEach(() => {
   localStorage.clear();
@@ -315,14 +318,6 @@ describe("translateError", () => {
 // --- locale key parity ---
 
 describe("locale key parity", () => {
-  // Import raw JSON for key comparison
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const zhTW = require("../i18n/locales/zh-TW.json");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const zhCN = require("../i18n/locales/zh-CN.json");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const en = require("../i18n/locales/en.json");
-
   const zhTWKeys = Object.keys(zhTW).sort();
   const zhCNKeys = Object.keys(zhCN).sort();
   const enKeys = Object.keys(en).sort();

@@ -1277,10 +1277,10 @@ retryBtn.addEventListener("click", () => {
 
 // --- External links ---
 
-document.querySelectorAll<HTMLAnchorElement>("a[data-href]").forEach((a) => {
+document.querySelectorAll<HTMLAnchorElement>("a.link[href]").forEach((a) => {
   a.addEventListener("click", (e) => {
     e.preventDefault();
-    const url = a.dataset.href;
+    const url = a.getAttribute("href");
     if (url && isSafeUrl(url)) openUrl(url);
   });
 });

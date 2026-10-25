@@ -64,7 +64,10 @@ pub fn extract_epub(epub_path: &Path) -> Result<(TempDir, Vec<ContentFile>), Str
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("EPUB_READ_ENTRY_FAILED:{e}"))?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| format!("EPUB_READ_ENTRY_FAILED:{e}"))?
+            .into_owned();
 
         // Prevent ZIP path traversal, for directory entries too. Path::starts_with
         // is component-based and treats "/tmp/x/../evil" as prefixed by "/tmp/x",
@@ -340,7 +343,10 @@ pub fn replace_text(kind: ContentKind, xml: &str, converted: &str) -> Result<Str
                 segments.get(nodes - 1)
             };
             match segment {
-                Some(segment) => write(Event::Text(BytesText::new(segment)))?,
+                // quick-xml escapes '\r' as "&#13;"; XML parsers normalise line ends to '\n' anyway.
+                Some(segment) => write(Event::Text(BytesText::new(
+                    &segment.replace("\r\n", "\n").replace('\r', "\n"),
+                )))?,
                 // Whitespace-only nodes (and any surplus) are written back untouched.
                 None => {
                     for e in done.events {
@@ -632,6 +638,13 @@ mod tests {
         assert!(result.contains("Hello"));
         assert!(result.contains("World"));
         assert!(!result.contains("你好"));
+    }
+
+    #[test]
+    fn replace_text_normalises_carriage_returns() {
+        let xhtml = "<html><body><p>a\r\nb</p></body></html>";
+        let result = replace_text(ContentKind::Xhtml, xhtml, "c\r\nd\re").unwrap();
+        assert!(result.contains("<p>c\nd\ne</p>"), "{result}");
     }
 
     #[test]
@@ -1180,7 +1193,7 @@ mod tests {
 
         // Entry at index 0 must be mimetype
         let entry0 = archive.by_index(0).unwrap();
-        assert_eq!(entry0.name(), "mimetype");
+        assert_eq!(entry0.name().unwrap(), "mimetype");
         assert_eq!(
             entry0.compression(),
             CompressionMethod::Stored,
@@ -1210,7 +1223,7 @@ mod tests {
 
         // Collect all entry names
         let names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
 
         assert!(names.contains(&"mimetype".to_string()));
@@ -1239,7 +1252,7 @@ mod tests {
         let repacked_file = fs::File::open(output.path()).unwrap();
         let mut archive = ZipArchive::new(repacked_file).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
         assert!(names.iter().any(|n| n.contains("content.xhtml")));
     }

@@ -239,7 +239,7 @@
           <h2 id="app-dialog-title" class="app-dialog-title"></h2>
           <p id="app-dialog-body" class="app-dialog-body"></p>
           <p id="app-dialog-warning" class="app-dialog-warning" hidden></p>
-          <pre id="app-dialog-notes" class="app-dialog-notes" aria-label="更新內容" data-i18n-aria-label="update.notes" hidden></pre>
+          <pre id="app-dialog-notes" class="app-dialog-notes" role="region" aria-label="更新內容" data-i18n-aria-label="update.notes" hidden></pre>
           <div class="app-dialog-actions">
             <button type="submit" id="app-dialog-cancel" value="cancel" class="action-btn"></button>
             <button type="submit" id="app-dialog-confirm" value="confirm" class="action-btn primary"></button>
@@ -262,11 +262,11 @@
             <i aria-hidden="true" class="ti ti-x"></i>
           </button>
         </div>
-        <nav class="drawer-tabs" role="tablist">
+        <div class="drawer-tabs" role="tablist">
           <button type="button" class="drawer-tab active" role="tab" id="tab-replace" aria-controls="panel-replace" aria-selected="true" tabindex="0" data-drawer-tab="replace" data-i18n="settings.tab.replace">取代</button>
           <button type="button" class="drawer-tab" role="tab" id="tab-modules" aria-controls="panel-modules" aria-selected="false" tabindex="-1" data-drawer-tab="modules" data-i18n="settings.tab.modules">模組</button>
           <button type="button" class="drawer-tab" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="false" tabindex="-1" data-drawer-tab="general" data-i18n="settings.tab.general">一般</button>
-        </nav>
+        </div>
         <div class="drawer-body">
           <!-- 取代 -->
           <div class="drawer-panel active" role="tabpanel" id="panel-replace" aria-labelledby="tab-replace" data-panel="replace">
@@ -325,9 +325,9 @@
               <h3><i aria-hidden="true" class="ti ti-info-circle"></i> <span data-i18n="settings.about.title">關於</span></h3>
               <div class="about-info">
                 <span><span data-i18n="settings.about.version">版本</span> <span id="app-version"></span></span>
-                <a class="link" data-href="https://zhconvert.org">zhconvert.org</a>
-                <a class="link" data-href="https://docs.zhconvert.org/license/" data-i18n="settings.about.license">授權條款</a>
-                <a class="link" data-href="https://github.com/fanhuaji-desktop/fanhuaji-tauri">GitHub</a>
+                <a class="link" href="https://zhconvert.org">zhconvert.org</a>
+                <a class="link" href="https://docs.zhconvert.org/license/" data-i18n="settings.about.license">授權條款</a>
+                <a class="link" href="https://github.com/fanhuaji-desktop/fanhuaji-tauri">GitHub</a>
               </div>
               <p class="api-notice" data-i18n="settings.about.apiNotice">
                 本程式使用了繁化姬的 API 服務。商業使用請參閱繁化姬授權條款。

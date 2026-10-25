@@ -1,11 +1,12 @@
 use crate::build_service_info;
 use crate::epub;
 use crate::{
-    API_BASE, ApiConvertData, ApiResponse, Backups, ConvertFileResult, ConvertOptions,
-    ConvertParams, EpubProgress, HttpClient, PREVIEW_CHAR_LIMIT, PreviewResult, ServiceInfo,
-    build_api_params, build_output_name, build_preview, check_file_size, chunk_budget, decode_text,
-    encode_text, epub_warnings, is_fatal_api_error, resolve_output_dir, split_text,
-    trim_partial_utf8, truncate_chars, validate_api_response, write_atomic,
+    API_BASE, ApiConvertData, ApiResponse, Backups, CHAPTER_DELIMITER, ConvertFileResult,
+    ConvertOptions, ConvertParams, EpubProgress, HttpClient, PREVIEW_CHAR_LIMIT, PreviewResult,
+    ServiceInfo, batch_by_size, build_api_params, build_output_name, build_preview,
+    check_file_size, chunk_budget, decode_text, encode_text, epub_warnings, is_fatal_api_error,
+    resolve_output_dir, split_text, trim_partial_utf8, truncate_chars, validate_api_response,
+    write_atomic,
 };
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -301,33 +302,97 @@ pub async fn preview_convert(
     Ok(build_preview(&content, &data.text))
 }
 
-/// Convert one extracted EPUB content file in place. Returns `Ok(false)` when
-/// the file has no text to convert.
-async fn convert_epub_chapter(
-    client: &reqwest::Client,
+/// An extracted EPUB content file that has text to convert.
+struct Chapter {
+    path: PathBuf,
     kind: epub::ContentKind,
-    file_path: &Path,
-    opts: ConvertOptions<'_>,
-) -> Result<bool, String> {
-    let xml = tokio::fs::read_to_string(file_path)
+    xml: String,
+    text: String,
+    name: String,
+}
+
+/// Read a content file and pull out its text; `None` when it has none.
+async fn read_chapter(
+    path: PathBuf,
+    kind: epub::ContentKind,
+    name: String,
+) -> Result<Option<Chapter>, String> {
+    let xml = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| format!("FILE_READ_FAILED:{e}"))?;
-
     let (text, count) = epub::extract_text(kind, &xml)?;
-    if count == 0 {
-        return Ok(false);
-    }
+    Ok((count > 0).then_some(Chapter {
+        path,
+        kind,
+        xml,
+        text,
+        name,
+    }))
+}
 
-    // Chunked, so a chapter over the request-body limit still converts.
-    let (converted, _) = convert_in_chunks(None, client, "", &text, opts).await?;
-    let new_xml = epub::replace_text(kind, &xml, &converted)?;
-    tokio::fs::write(file_path, new_xml)
+async fn write_chapter(ch: &Chapter, converted: &str) -> Result<(), String> {
+    let new_xml = epub::replace_text(ch.kind, &ch.xml, converted)?;
+    tokio::fs::write(&ch.path, new_xml)
         .await
-        .map_err(|e| format!("FILE_WRITE_FAILED:{e}"))?;
+        .map_err(|e| format!("FILE_WRITE_FAILED:{e}"))
+}
 
-    // Small delay between API calls
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    Ok(true)
+/// Convert chapters one request (or chunked set) each. Stops after a fatal error, which
+/// the remaining chapters would hit too.
+async fn convert_each(
+    client: &reqwest::Client,
+    group: &[Chapter],
+    opts: ConvertOptions<'_>,
+) -> Vec<Result<(), String>> {
+    let mut results = Vec::new();
+    for (i, ch) in group.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let result = match convert_in_chunks(None, client, "", &ch.text, opts).await {
+            Ok((converted, _)) => write_chapter(ch, &converted).await,
+            Err(e) => Err(e),
+        };
+        let fatal = matches!(&result, Err(e) if is_fatal_api_error(e));
+        results.push(result);
+        if fatal {
+            break;
+        }
+    }
+    results
+}
+
+/// Convert a batch of chapters in a single request. If the request fails for this text
+/// or the reply splits into the wrong number of chapters, each is retried on its own so
+/// one bad chapter does not fail its neighbours.
+async fn convert_batch(
+    client: &reqwest::Client,
+    group: &[Chapter],
+    opts: ConvertOptions<'_>,
+) -> Vec<Result<(), String>> {
+    if group.len() == 1 {
+        return convert_each(client, group, opts).await;
+    }
+    let joined = group
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<Vec<_>>()
+        .join(CHAPTER_DELIMITER);
+    match convert_chunk(client, &joined, opts).await {
+        Ok(data) => {
+            let parts: Vec<&str> = data.text.split(CHAPTER_DELIMITER).collect();
+            if parts.len() == group.len() {
+                let mut results = Vec::new();
+                for (ch, part) in group.iter().zip(parts) {
+                    results.push(write_chapter(ch, part).await);
+                }
+                return results;
+            }
+        }
+        Err(e) if is_fatal_api_error(&e) => return vec![Err(e)],
+        Err(_) => {}
+    }
+    convert_each(client, group, opts).await
 }
 
 #[tauri::command]
@@ -351,27 +416,49 @@ pub async fn convert_epub(
     let mut last_error = None;
     let opts = params.options();
 
-    for (i, content_file) in content_files.iter().enumerate() {
+    let mut chapters = Vec::new();
+    for content_file in &content_files {
+        let path = temp_dir.path().join(&content_file.relative_path);
+        let name = epub::chapter_display_name(&content_file.relative_path);
+        match read_chapter(path, content_file.kind, name).await {
+            Ok(Some(ch)) => chapters.push(ch),
+            Ok(None) => {}
+            Err(e) => {
+                failed_chapters += 1;
+                last_error = Some(e);
+            }
+        }
+    }
+
+    // Short chapters share a request: one request per chapter, each followed by a pause,
+    // made a long book take minutes.
+    let sizes: Vec<usize> = chapters.iter().map(|c| c.text.len()).collect();
+    for (n, batch) in batch_by_size(&sizes, chunk_budget(opts)?)
+        .into_iter()
+        .enumerate()
+    {
+        if n > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         let _ = app.emit(
             "epub-progress",
             EpubProgress {
                 file_id: params.file_id.clone(),
-                chapter_index: i + 1,
-                chapter_total,
-                chapter_name: epub::chapter_display_name(&content_file.relative_path),
+                chapter_index: batch.start + 1,
+                chapter_total: chapters.len(),
+                chapter_name: chapters[batch.start].name.clone(),
             },
         );
-
-        let file_path = temp_dir.path().join(&content_file.relative_path);
-        match convert_epub_chapter(&client.0, content_file.kind, &file_path, opts).await {
-            Ok(true) => converted_chapters += 1,
-            Ok(false) => {}
-            // Offline or the API is rejecting every request: the remaining
-            // chapters would fail the same way, each after its own timeout.
-            Err(e) if is_fatal_api_error(&e) => return Err(e),
-            Err(e) => {
-                failed_chapters += 1;
-                last_error = Some(e);
+        for result in convert_batch(&client.0, &chapters[batch], opts).await {
+            match result {
+                Ok(()) => converted_chapters += 1,
+                // Offline or the API is rejecting every request: the remaining
+                // chapters would fail the same way, each after its own timeout.
+                Err(e) if is_fatal_api_error(&e) => return Err(e),
+                Err(e) => {
+                    failed_chapters += 1;
+                    last_error = Some(e);
+                }
             }
         }
     }

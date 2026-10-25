@@ -7,6 +7,7 @@
 ### Changed
 
 - 相依套件升級到最新版：reqwest 0.13、zip 9、chardetng 1.0、Vite 8、Vitest 5、TypeScript 7、Biome 2.6 等
+- EPUB 轉換加速：短章節合併成一次請求送出，不再每章一個請求、每章後面再等 100ms；重新打包時圖片、字型等已壓縮的檔案直接存入，不再重新壓縮
 
 ### Fixed
 

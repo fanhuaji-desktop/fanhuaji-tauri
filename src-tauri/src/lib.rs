@@ -269,6 +269,34 @@ pub(crate) fn chunk_budget(opts: ConvertOptions) -> Result<usize, String> {
     Ok(budget)
 }
 
+/// Separates whole EPUB content files batched into one `/convert` request; distinct from
+/// the text-node delimiter inside each file.
+pub(crate) const CHAPTER_DELIMITER: &str = "\x00\x02\x00";
+
+/// Group consecutive texts of these byte sizes into batches whose joined size (with
+/// `CHAPTER_DELIMITER` between them) fits `budget`, so short chapters share a request.
+/// A text over the budget gets a batch of its own and is then sent in chunks.
+pub(crate) fn batch_by_size(sizes: &[usize], budget: usize) -> Vec<std::ops::Range<usize>> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut used = 0;
+    for (i, &size) in sizes.iter().enumerate() {
+        if i > start && used + CHAPTER_DELIMITER.len() + size > budget {
+            batches.push(start..i);
+            start = i;
+            used = size;
+        } else if i == start {
+            used = size;
+        } else {
+            used += CHAPTER_DELIMITER.len() + size;
+        }
+    }
+    if start < sizes.len() {
+        batches.push(start..sizes.len());
+    }
+    batches
+}
+
 /// Split `text` into consecutive slices each at most `max_bytes` long.
 ///
 /// Splits happen at `\n` boundaries where possible (the newline stays with the
@@ -1470,6 +1498,25 @@ mod tests {
         assert!(!is_fatal_api_error("API_ERROR:some error"));
         assert!(!is_fatal_api_error("HTTP_ERROR_LIKE:1"));
         assert!(!is_fatal_api_error(""));
+    }
+
+    // --- batch_by_size ---
+
+    #[test]
+    fn batch_by_size_packs_small_texts_together() {
+        let d = CHAPTER_DELIMITER.len();
+        assert_eq!(batch_by_size(&[10, 10, 10], 30 + 2 * d), vec![0..3]);
+        assert_eq!(batch_by_size(&[10, 10, 10], 20 + d), vec![0..2, 2..3]);
+    }
+
+    #[test]
+    fn batch_by_size_gives_oversized_text_its_own_batch() {
+        assert_eq!(batch_by_size(&[5, 100, 5], 50), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn batch_by_size_empty() {
+        assert!(batch_by_size(&[], 50).is_empty());
     }
 
     // --- epub_warnings ---

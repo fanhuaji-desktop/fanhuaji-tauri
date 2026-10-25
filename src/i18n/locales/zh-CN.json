@@ -7,12 +7,10 @@
   "drop.releaseConvert": "松开后以{mode}转换",
   "drop.releaseOverwrite": "松开后以{mode}转换并覆盖原文件（退出 App 前可恢复）",
   "drop.shortcut": "或按 {key} 选择文件",
-  "drop.subtitle": "或 点击打开文件",
   "drop.formats": "支持 TXT、SRT、ASS、LRC、VTT、CSV、JSON、XML、HTML、MD、EPUB",
 
   "files.addMore": "添加更多文件",
 
-  "status.total": "全部:",
   "status.success": "完成:",
   "status.warning": "警告:",
   "status.error": "错误:",

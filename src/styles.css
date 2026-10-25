@@ -686,14 +686,6 @@ html[lang="en"] .brand-sub { display: none; }
   to { transform: rotate(360deg); }
 }
 
-.file-name {
-  flex: 1;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* Progress bar */
 .progress-bar-container {
   height: 2px;

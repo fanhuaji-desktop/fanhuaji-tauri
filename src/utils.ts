@@ -116,16 +116,25 @@ export function countByStatus(files: readonly FileEntry[]) {
   return counts;
 }
 
-const ALLOWED_URL_PREFIXES = [
-  "https://zhconvert.org",
-  "https://docs.zhconvert.org",
+const ALLOWED_URLS = [
+  "https://zhconvert.org/",
+  "https://docs.zhconvert.org/",
   "https://github.com/fanhuaji-desktop/fanhuaji-tauri",
 ];
 
 export function isSafeUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" && ALLOWED_URL_PREFIXES.some((p) => url.startsWith(p));
+    // Compare origins, then the path prefix: a plain string prefix would let
+    // "https://zhconvert.org.evil.com" through.
+    return ALLOWED_URLS.some((allowed) => {
+      const a = new URL(allowed);
+      const dir = a.pathname.endsWith("/") ? a.pathname : `${a.pathname}/`;
+      return (
+        parsed.origin === a.origin &&
+        (parsed.pathname === a.pathname || parsed.pathname.startsWith(dir))
+      );
+    });
   } catch {
     return false;
   }

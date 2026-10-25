@@ -317,6 +317,12 @@ describe("isSafeUrl", () => {
     expect(isSafeUrl("http://zhconvert.org")).toBe(false);
   });
 
+  it("rejects lookalike hosts and repo names", () => {
+    expect(isSafeUrl("https://zhconvert.org.evil.com/")).toBe(false);
+    expect(isSafeUrl("https://github.com/fanhuaji-desktop/fanhuaji-tauri-evil")).toBe(false);
+    expect(isSafeUrl("https://github.com/fanhuaji-desktop/fanhuaji-tauri/releases")).toBe(true);
+  });
+
   it("rejects unknown domain", () => {
     expect(isSafeUrl("https://evil.com")).toBe(false);
   });

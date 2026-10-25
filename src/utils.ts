@@ -1,4 +1,4 @@
-import { t } from "./i18n/i18n";
+import { t, translateError } from "./i18n/i18n";
 
 export function escHtml(s: string): string {
   return s
@@ -14,7 +14,10 @@ export interface FileEntry {
   inputPath: string;
   inputName: string;
   status: "pending" | "converting" | "success" | "error" | "restored";
-  message: string;
+  /** Raw error code (`CODE:detail`) of a failed file; translated when shown. */
+  error?: string;
+  /** Raw warnings of a file that converted only in part; translated when shown. */
+  warnings?: string;
   outputName: string;
   outputPath: string;
   /** Copy of the original kept when overwrite mode replaced it; enables undo. */
@@ -29,11 +32,26 @@ export function fileExt(name: string): string {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
+/** A finished file whose conversion reported warnings (e.g. EPUB_PARTIAL_FAILED). */
+export function hasWarnings(f: FileEntry): boolean {
+  return f.status === "success" && !!f.warnings;
+}
+
+/**
+ * The error or warning text of a file, in the current UI language, or "" when there is
+ * none. Translated on every call so a language switch also changes messages already shown.
+ */
+export function fileNote(f: FileEntry): string {
+  if (f.status === "error") return translateError(f.error ?? "");
+  if (f.status === "success" && f.warnings)
+    return t("file.convertDoneWithWarnings", { warnings: translateError(f.warnings) });
+  return "";
+}
+
 /** The subtitle line on a file card, already HTML-escaped. */
 export function fileMessage(f: FileEntry): string {
-  // Success carries a message only when there were warnings (e.g. EPUB_PARTIAL_FAILED).
   if (f.status === "success") {
-    if (f.message) return escHtml(f.message);
+    if (f.warnings) return escHtml(fileNote(f));
     if (f.backupPath) return escHtml(t("file.overwritten"));
     return escHtml(
       f.outputName ? t("file.savedAs", { name: f.outputName }) : t("file.convertDone"),
@@ -50,7 +68,7 @@ export function fileMessage(f: FileEntry): string {
         )
       : escHtml(t("file.converting"));
   }
-  if (f.status === "error") return escHtml(f.message);
+  if (f.status === "error") return escHtml(fileNote(f));
   if (f.status === "restored") return escHtml(t("file.restored"));
   // pending: show the format name as a neutral subtitle
   return escHtml(fileExt(f.inputName).toUpperCase() || "—");
@@ -91,7 +109,7 @@ export function parseFilePath(path: string): { dir: string; name: string } {
 
 export function resetErrors(files: readonly FileEntry[]): FileEntry[] {
   return files.map((f) =>
-    f.status === "error" ? { ...f, status: "pending" as const, message: "" } : f,
+    f.status === "error" ? { ...f, status: "pending" as const, error: undefined } : f,
   );
 }
 
@@ -109,7 +127,7 @@ export function countByStatus(files: readonly FileEntry[]) {
   const counts = { total: files.length, pending: 0, success: 0, warning: 0, error: 0 };
   for (const f of files) {
     if (f.status === "pending") counts.pending++;
-    else if (f.status === "success" && f.message) counts.warning++;
+    else if (hasWarnings(f)) counts.warning++;
     else if (f.status === "success") counts.success++;
     else if (f.status === "error") counts.error++;
   }

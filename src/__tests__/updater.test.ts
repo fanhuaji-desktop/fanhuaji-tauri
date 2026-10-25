@@ -63,7 +63,8 @@ describe("updater", () => {
     it("shows version when update available and user declines", async () => {
       const mockUpdate = {
         version: "2.0.0",
-        downloadAndInstall: vi.fn(),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn(),
       };
       mockCheck.mockResolvedValue(mockUpdate as unknown as Update);
       vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -76,23 +77,23 @@ describe("updater", () => {
     it("downloads and installs when user confirms", async () => {
       const mockUpdate = {
         version: "2.0.0",
-        downloadAndInstall: vi.fn().mockResolvedValue(undefined),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn().mockResolvedValue(undefined),
       };
       mockCheck.mockResolvedValue(mockUpdate as unknown as Update);
       vi.spyOn(window, "confirm").mockReturnValue(true);
 
       await checkForUpdates(false);
-      expect(mockUpdate.downloadAndInstall).toHaveBeenCalled();
+      expect(mockUpdate.download).toHaveBeenCalled();
     });
 
     it("sets download complete message when Finished event received", async () => {
       const mockUpdate = {
         version: "2.0.0",
-        downloadAndInstall: vi
-          .fn()
-          .mockImplementation(async (cb: (event: { event: string }) => void) => {
-            cb({ event: "Finished" });
-          }),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn().mockImplementation(async (cb: (event: { event: string }) => void) => {
+          cb({ event: "Finished" });
+        }),
       };
       mockCheck.mockResolvedValue(mockUpdate as unknown as Update);
       vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -105,11 +106,10 @@ describe("updater", () => {
     it("does not set complete message for non-Finished events", async () => {
       const mockUpdate = {
         version: "2.0.0",
-        downloadAndInstall: vi
-          .fn()
-          .mockImplementation(async (cb: (event: { event: string }) => void) => {
-            cb({ event: "Progress" });
-          }),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn().mockImplementation(async (cb: (event: { event: string }) => void) => {
+          cb({ event: "Progress" });
+        }),
       };
       mockCheck.mockResolvedValue(mockUpdate as unknown as Update);
       vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -140,7 +140,8 @@ describe("updater", () => {
     it("shows portableAvailable message when portable and update found", async () => {
       const mockUpdate = {
         version: "2.0.0",
-        downloadAndInstall: vi.fn(),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn(),
       };
       mockCheck.mockResolvedValue(mockUpdate as unknown as Update);
       mockInvoke.mockResolvedValue(true); // is_portable = true
@@ -149,33 +150,35 @@ describe("updater", () => {
       await checkForUpdates(false);
       const status = document.getElementById("update-status");
       expect(status?.textContent).toContain("攜帶版無法自動更新");
-      expect(mockUpdate.downloadAndInstall).not.toHaveBeenCalled();
+      expect(mockUpdate.download).not.toHaveBeenCalled();
       expect(confirmSpy).not.toHaveBeenCalled();
     });
 
     it("does not download or install when portable", async () => {
       const mockUpdate = {
         version: "2.0.0",
-        downloadAndInstall: vi.fn(),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn(),
       };
       mockCheck.mockResolvedValue(mockUpdate as unknown as Update);
       mockInvoke.mockResolvedValue(true);
 
       await checkForUpdates(false);
-      expect(mockUpdate.downloadAndInstall).not.toHaveBeenCalled();
+      expect(mockUpdate.download).not.toHaveBeenCalled();
     });
 
     it("falls back to normal flow when invoke throws", async () => {
       const mockUpdate = {
         version: "2.0.0",
-        downloadAndInstall: vi.fn().mockResolvedValue(undefined),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn().mockResolvedValue(undefined),
       };
       mockCheck.mockResolvedValue(mockUpdate as unknown as Update);
       mockInvoke.mockRejectedValue(new Error("command not found"));
       vi.spyOn(window, "confirm").mockReturnValue(true);
 
       await checkForUpdates(false);
-      expect(mockUpdate.downloadAndInstall).toHaveBeenCalled();
+      expect(mockUpdate.download).toHaveBeenCalled();
     });
   });
 
@@ -227,9 +230,11 @@ describe("updater", () => {
     const update = () =>
       ({
         version: "2.5.0",
-        downloadAndInstall: vi.fn().mockResolvedValue(undefined),
+        install: vi.fn().mockResolvedValue(undefined),
+        download: vi.fn().mockResolvedValue(undefined),
       }) as unknown as Update & {
-        downloadAndInstall: ReturnType<typeof vi.fn>;
+        download: ReturnType<typeof vi.fn>;
+        install: ReturnType<typeof vi.fn>;
       };
 
     it("leaves a cue instead of a dialog when the startup check finds an update", async () => {
@@ -243,7 +248,7 @@ describe("updater", () => {
 
       confirmSpy.mockReturnValue(true);
       await installPendingUpdate();
-      expect(u.downloadAndInstall).toHaveBeenCalled();
+      expect(u.download).toHaveBeenCalled();
     });
 
     it("blocks the restart while a batch is converting", async () => {
@@ -253,7 +258,65 @@ describe("updater", () => {
       initUpdater({ getRisk: () => ({ converting: true, undoable: 0 }), onAvailable: vi.fn() });
       await vi.waitFor(() => expect(mockCheck).toHaveBeenCalled());
       await installPendingUpdate();
-      expect(u.downloadAndInstall).not.toHaveBeenCalled();
+      expect(u.download).not.toHaveBeenCalled();
+    });
+
+    it("waits for a batch started during the download before installing", async () => {
+      const u = update();
+      mockCheck.mockResolvedValue(u);
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      let converting = false;
+      u.download.mockImplementation(async () => {
+        converting = true;
+      });
+      const onAvailable = vi.fn();
+      initUpdater({ getRisk: () => ({ converting, undoable: 0 }), onAvailable });
+      await vi.waitFor(() => expect(onAvailable).toHaveBeenCalled());
+      const done = installPendingUpdate();
+      await vi.waitFor(() =>
+        expect(document.getElementById("update-status")?.textContent).toBe(
+          "下載完成，等轉換結束後就會重新啟動…",
+        ),
+      );
+      expect(u.install).not.toHaveBeenCalled();
+      converting = false;
+      await done;
+      expect(u.install).toHaveBeenCalled();
+    });
+
+    it("asks again when files were overwritten during the download", async () => {
+      const u = update();
+      mockCheck.mockResolvedValue(u);
+      const confirmSpy = vi
+        .spyOn(window, "confirm")
+        .mockReturnValueOnce(true)
+        .mockReturnValue(false);
+      let undoable = 0;
+      u.download.mockImplementation(async () => {
+        undoable = 2;
+      });
+      const onAvailable = vi.fn();
+      initUpdater({ getRisk: () => ({ converting: false, undoable }), onAvailable });
+      await vi.waitFor(() => expect(onAvailable).toHaveBeenCalled());
+      await installPendingUpdate();
+      expect(confirmSpy).toHaveBeenCalledTimes(2);
+      expect(u.install).not.toHaveBeenCalled();
+    });
+
+    it("installs once the second prompt is accepted", async () => {
+      const u = update();
+      mockCheck.mockResolvedValue(u);
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      let undoable = 0;
+      u.download.mockImplementation(async () => {
+        undoable = 1;
+      });
+      const onAvailable = vi.fn();
+      initUpdater({ getRisk: () => ({ converting: false, undoable }), onAvailable });
+      await vi.waitFor(() => expect(onAvailable).toHaveBeenCalled());
+      await installPendingUpdate();
+      expect(confirmSpy).toHaveBeenCalledTimes(2);
+      expect(u.install).toHaveBeenCalled();
     });
 
     it("does nothing when there is no pending update", async () => {
@@ -266,7 +329,7 @@ describe("updater", () => {
 
     it("shows the failure when installing the pending update fails", async () => {
       const u = update();
-      u.downloadAndInstall.mockRejectedValue(new Error("disk full"));
+      u.download.mockRejectedValue(new Error("disk full"));
       mockCheck.mockResolvedValue(u);
       vi.spyOn(window, "confirm").mockReturnValue(true);
       const onAvailable = vi.fn();
@@ -284,7 +347,7 @@ describe("updater", () => {
       await checkForUpdates(false);
       const calls = confirmSpy.mock.calls;
       expect(calls[calls.length - 1]?.[0]).toContain("3");
-      expect(u.downloadAndInstall).not.toHaveBeenCalled();
+      expect(u.download).not.toHaveBeenCalled();
     });
   });
 });

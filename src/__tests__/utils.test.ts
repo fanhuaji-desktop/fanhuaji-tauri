@@ -9,6 +9,7 @@ import {
   type FileEntry,
   fileExt,
   fileMessage,
+  fileNote,
   inlineDiff,
   isEpubFile,
   isSafeUrl,
@@ -145,6 +146,15 @@ describe("fileMessage", () => {
 
   it("shows restored after an undo", () => {
     expect(fileMessage(makeFile({ status: "restored" }))).toBe(t("file.restored"));
+  });
+
+  it("has no note for a file without an error or warnings", () => {
+    expect(fileNote(makeFile({ status: "success" }))).toBe("");
+    expect(fileNote(makeFile({ status: "pending", warnings: "x" }))).toBe("");
+  });
+
+  it("falls back to the generic error text when the code is missing", () => {
+    expect(fileNote(makeFile({ status: "error" }))).toBe(translateError(""));
   });
 
   it("translates the error in the current language", () => {

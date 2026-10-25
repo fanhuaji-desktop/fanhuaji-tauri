@@ -303,6 +303,22 @@ describe("updater", () => {
       expect(u.install).not.toHaveBeenCalled();
     });
 
+    it("installs once the second prompt is accepted", async () => {
+      const u = update();
+      mockCheck.mockResolvedValue(u);
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      let undoable = 0;
+      u.download.mockImplementation(async () => {
+        undoable = 1;
+      });
+      const onAvailable = vi.fn();
+      initUpdater({ getRisk: () => ({ converting: false, undoable }), onAvailable });
+      await vi.waitFor(() => expect(onAvailable).toHaveBeenCalled());
+      await installPendingUpdate();
+      expect(confirmSpy).toHaveBeenCalledTimes(2);
+      expect(u.install).toHaveBeenCalled();
+    });
+
     it("does nothing when there is no pending update", async () => {
       vi.resetModules();
       const fresh = await import("../updater");

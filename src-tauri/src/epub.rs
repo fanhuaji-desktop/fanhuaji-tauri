@@ -396,7 +396,8 @@ fn write_epub_zip(temp_dir: &Path, file: &mut fs::File) -> Result<(), String> {
 
     // Add all other files
     let all_files = collect_files(temp_dir)?;
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
     for relative in &all_files {
         if relative == "mimetype" {
@@ -405,6 +406,13 @@ fn write_epub_zip(temp_dir: &Path, file: &mut fs::File) -> Result<(), String> {
         let full_path = temp_dir.join(relative);
         let content =
             fs::read(&full_path).map_err(|e| format!("FILE_READ_FAILED:{relative}: {e}"))?;
+        // Images, fonts and media are compressed already; deflating them again costs
+        // time on every repack for next to no size.
+        let options = if is_precompressed(relative) {
+            stored
+        } else {
+            deflated
+        };
         zip.start_file(relative, options)
             .map_err(|e| format!("ZIP_WRITE_FAILED:{e}"))?;
         zip.write_all(&content)
@@ -413,6 +421,16 @@ fn write_epub_zip(temp_dir: &Path, file: &mut fs::File) -> Result<(), String> {
 
     zip.finish().map_err(|e| format!("ZIP_FINISH_FAILED:{e}"))?;
     Ok(())
+}
+
+fn is_precompressed(path: &str) -> bool {
+    const EXTS: &[&str] = &[
+        "jpg", "jpeg", "png", "gif", "webp", "woff", "woff2", "mp3", "mp4", "m4a", "ogg",
+    ];
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 fn collect_files(dir: &Path) -> Result<Vec<String>, String> {
@@ -1174,6 +1192,23 @@ mod tests {
     // -------------------------------------------------------------------------
     // repack_epub
     // -------------------------------------------------------------------------
+
+    #[test]
+    fn repack_epub_stores_images_and_deflates_text() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("mimetype"), b"application/epub+zip").unwrap();
+        fs::write(dir.path().join("cover.JPG"), b"JFIF").unwrap();
+        fs::write(dir.path().join("ch1.xhtml"), b"<html/>").unwrap();
+        let output = NamedTempFile::new().unwrap();
+        repack_epub(dir.path(), output.path()).unwrap();
+        let mut archive = ZipArchive::new(fs::File::open(output.path()).unwrap()).unwrap();
+        let method = |a: &mut ZipArchive<fs::File>, n: &str| a.by_name(n).unwrap().compression();
+        assert_eq!(method(&mut archive, "cover.JPG"), CompressionMethod::Stored);
+        assert_eq!(
+            method(&mut archive, "ch1.xhtml"),
+            CompressionMethod::Deflated
+        );
+    }
 
     #[test]
     fn repack_epub_mimetype_is_first_and_stored() {

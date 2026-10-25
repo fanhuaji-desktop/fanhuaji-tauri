@@ -43,8 +43,8 @@ export function hasWarnings(f: FileEntry): boolean {
  */
 export function fileNote(f: FileEntry): string {
   if (f.status === "error") return translateError(f.error ?? "");
-  if (hasWarnings(f))
-    return t("file.convertDoneWithWarnings", { warnings: translateError(f.warnings ?? "") });
+  if (f.status === "success" && f.warnings)
+    return t("file.convertDoneWithWarnings", { warnings: translateError(f.warnings) });
   return "";
 }
 

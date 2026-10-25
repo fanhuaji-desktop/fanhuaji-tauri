@@ -327,7 +327,6 @@ function showEmptyPreview(): void {
   previewEmpty.classList.remove("hidden");
 }
 
-// Highlight the differing middle of a changed line via common prefix/suffix.
 type DiffRow =
   | { t: "equal"; conv: string }
   | { t: "replace"; orig: string; conv: string }
@@ -1024,7 +1023,7 @@ function persistOnChange(id: string, key: string) {
   el?.addEventListener("change", () => {
     localStorage.setItem(key, el.value);
   });
-  // For textareas, also persist on input (debounced would be better but change is fine)
+  // Textareas also persist on input, so a rule being typed survives closing the app.
   if (el instanceof HTMLTextAreaElement) {
     el.addEventListener("input", () => {
       localStorage.setItem(key, el.value);

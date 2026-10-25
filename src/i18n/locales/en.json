@@ -7,12 +7,10 @@
   "drop.releaseConvert": "Release to convert to {mode}",
   "drop.releaseOverwrite": "Release to convert to {mode} and overwrite the originals (undo until you quit)",
   "drop.shortcut": "or press {key} to choose files",
-  "drop.subtitle": "or click to open files",
   "drop.formats": "Supports TXT, SRT, ASS, LRC, VTT, CSV, JSON, XML, HTML, MD, EPUB",
 
   "files.addMore": "Add more files",
 
-  "status.total": "Total:",
   "status.success": "Done:",
   "status.warning": "Warnings:",
   "status.error": "Error:",

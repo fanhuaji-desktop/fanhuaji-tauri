@@ -123,7 +123,7 @@ pub fn extract_epub(epub_path: &Path) -> Result<(TempDir, Vec<ContentFile>), Str
         fs::write(&out_path, &buf).map_err(|e| format!("FILE_WRITE_FAILED:{e}"))?;
     }
 
-    // Find content files by scanning for .xhtml/.html files
+    // Find the files with text to convert: .xhtml/.html chapters, .ncx and the .opf
     let content_files = find_content_files(temp_dir.path())?;
 
     Ok((temp_dir, content_files))

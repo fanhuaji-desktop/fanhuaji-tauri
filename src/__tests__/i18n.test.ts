@@ -238,13 +238,13 @@ describe("translatePage", () => {
   it("translates multiple elements at once", () => {
     document.body.innerHTML = `
       <span data-i18n="drop.title">a</span>
-      <span data-i18n="drop.subtitle">b</span>
+      <span data-i18n="drop.release">b</span>
     `;
     setLocale("zh-CN");
     translatePage();
     const spans = document.querySelectorAll("span");
     expect(spans[0].textContent).toBe("拖放文件到此处");
-    expect(spans[1].textContent).toBe("或 点击打开文件");
+    expect(spans[1].textContent).toBe("松开以添加文件");
   });
 
   it("handles empty data-i18n gracefully", () => {

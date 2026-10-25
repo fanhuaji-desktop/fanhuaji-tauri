@@ -2,6 +2,17 @@
 
 本檔案記錄繁化姬 Tauri 版的所有重要變更。格式基於 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [Unreleased]
+
+### Security
+
+- 移除用不到的對話框權限 `dialog:default`；CSP 的 `connect-src` 收緊為 `'self'`（網路請求都由 Rust 端發出）
+- 外部連結允許清單改為比對網域與路徑，擋下 `zhconvert.org.evil.com` 這類冒名網址
+
+### Removed
+
+- 清除沒用到的翻譯字串、CSS、tokio 功能與過時註解
+
 ## [2.5.2] - 2026-10-25
 
 ### Changed

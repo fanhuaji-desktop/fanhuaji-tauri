@@ -20,6 +20,23 @@ describe("diffLines", () => {
     ]);
   });
 
+  it("marks a line added in the middle as an insert", () => {
+    expect(diffLines(["a", "c"], ["a", "b", "c"])).toEqual([
+      { t: "equal", conv: "a" },
+      { t: "insert", conv: "b" },
+      { t: "equal", conv: "c" },
+    ]);
+  });
+
+  it("pads the shorter side in the large-input fallback", () => {
+    const o = Array.from({ length: 2001 }, (_, i) => `o${i}`);
+    const c = Array.from({ length: 2002 }, (_, i) => `o${i}`);
+    const rows = diffLines(o, c);
+    expect(rows).toHaveLength(2002);
+    expect(rows[2001]).toEqual({ t: "replace", orig: "", conv: "o2001" });
+    expect(diffLines(c, o)[2001]).toEqual({ t: "replace", orig: "o2001", conv: "" });
+  });
+
   it("falls back to index alignment for very large inputs", () => {
     const o = Array.from({ length: 2001 }, (_, i) => `o${i}`);
     const c = Array.from({ length: 2001 }, (_, i) => (i === 5 ? "x" : `o${i}`));
@@ -37,6 +54,22 @@ describe("renderDiff", () => {
     expect(html).toContain("&lt;a&gt;");
     expect(html).not.toContain("<a>");
     expect(html).not.toContain('lang="zh-Hans"');
+  });
+
+  it("renders inserted, removed and blank lines", () => {
+    const added = renderDiff("a", "a\nb", "Taiwan");
+    expect(added.changedLines).toBe(1);
+    expect(added.html).toContain('class="diff-line added"');
+    const removed = renderDiff("a\nb", "a", "Taiwan");
+    expect(removed.changedLines).toBe(0);
+    expect(removed.html).toContain('class="diff-line removed"');
+    expect(renderDiff("", "", "Taiwan").html).toContain("&nbsp;");
+    expect(renderDiff("", "y", "Taiwan").html).toContain("&nbsp;");
+    expect(renderDiff("a", "a\n", "Taiwan").html).toContain('<span class="chg">&nbsp;</span>');
+    expect(renderDiff("a\n", "a", "Taiwan").html).toContain('<div class="diff-orig">&nbsp;</div>');
+    expect(renderDiff("我软件", "我軟體", "Taiwan").html).toContain(
+      '我<span class="chg">軟體</span>',
+    );
   });
 
   it("marks Simplified output for a Simplified face", () => {

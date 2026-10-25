@@ -73,4 +73,13 @@ describe("queue batches", () => {
     q.end();
     expect(q.stopped).toBe(false);
   });
+
+  it("patches only the matching file", () => {
+    const q = createQueue();
+    q.files = [file("a"), file("b")];
+    q.patch("b", { status: "error", error: "X" });
+    expect(q.files.map((f) => f.status)).toEqual(["pending", "error"]);
+    q.patch("gone", { status: "success" });
+    expect(q.files.map((f) => f.status)).toEqual(["pending", "error"]);
+  });
 });

@@ -12,8 +12,11 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { exit } from "@tauri-apps/plugin-process";
 import { confirmDialog } from "./dialog";
+import { renderDiff } from "./diff";
 import { getLocale, initI18n, type Locale, setLocale, t, translateError } from "./i18n/i18n";
 import { setAppMenu } from "./menu";
+import { createQueue } from "./queue";
+import { isAutoConvert, persistOnChange, restoreSetting, STORAGE_KEYS } from "./settings";
 import { initTheme } from "./theme";
 import { initUpdater, installPendingUpdate } from "./updater";
 import {
@@ -21,21 +24,18 @@ import {
   countByStatus,
   countUndoable,
   createRequestGuard,
-  type DiffSeg,
   escHtml,
   type FileEntry,
   fileExt,
   fileMessage,
   fileNote,
   hasWarnings,
-  inlineDiff,
   isEpubFile,
   isSafeUrl,
   parseFilePath,
   parseStoredObject,
   removeCompleted,
   resetErrors,
-  shouldResumeConversion,
 } from "./utils";
 
 interface EpubProgressPayload {
@@ -57,35 +57,12 @@ interface ModuleInfo {
   category: string;
 }
 
-// --- Storage keys ---
-
-const STORAGE_KEYS = {
-  converter: "fanhuaji-converter",
-  naming: "fanhuaji-naming",
-  customSuffix: "fanhuaji-custom-suffix",
-  preReplace: "fanhuaji-pre-replace",
-  postReplace: "fanhuaji-post-replace",
-  protectReplace: "fanhuaji-protect-replace",
-  modules: "fanhuaji-modules",
-  autoConvert: "fanhuaji-auto-convert",
-} as const;
-
 // --- State ---
 
-let files: FileEntry[] = [];
-let isConverting = false;
-// Set by the Stop button; the batch loop exits before starting its next file.
-let stopRequested = false;
-// The last batch was stopped: keep the convert button up even with auto-convert on.
-let batchStopped = false;
+const queue = createQueue();
 let moduleData: ModuleInfo[] = [];
 let moduleSettings = parseStoredObject(localStorage.getItem(STORAGE_KEYS.modules));
 let activeCategory = "";
-
-/** Update one file in the queue; a file removed meanwhile stays removed. */
-function patchFile(id: string, patch: Partial<FileEntry>): void {
-  files = files.map((f) => (f.id === id ? { ...f, ...patch } : f));
-}
 
 // --- DOM ---
 
@@ -121,10 +98,6 @@ const dropOverlay = $<HTMLDivElement>("#drop-overlay");
 const dropOverlayText = $<HTMLSpanElement>("#drop-overlay-text");
 
 // --- Auto-convert ---
-
-function isAutoConvert(): boolean {
-  return localStorage.getItem(STORAGE_KEYS.autoConvert) !== "false";
-}
 
 // Restore auto-convert setting
 autoConvertCheckbox.checked = isAutoConvert();
@@ -203,55 +176,55 @@ function metaTitle(f: FileEntry): string {
 }
 
 function render() {
-  const isEmpty = files.length === 0;
+  const isEmpty = queue.files.length === 0;
 
   statusBar.classList.toggle("hidden", isEmpty);
-  queueMeta.textContent = isEmpty ? "" : t("queue.count", { count: String(files.length) });
+  queueMeta.textContent = isEmpty ? "" : t("queue.count", { count: String(queue.files.length) });
 
   for (const id of previewCache.keys()) {
-    if (!files.some((f) => f.id === id)) previewCache.delete(id);
+    if (!queue.files.some((f) => f.id === id)) previewCache.delete(id);
   }
 
   // Drop the preview back to its empty state if the selected file is gone.
-  if (selectedId && !files.some((f) => f.id === selectedId)) showEmptyPreview();
+  if (selectedId && !queue.files.some((f) => f.id === selectedId)) showEmptyPreview();
 
   // Show retry button if there are errors
-  const hasErrors = files.some((f) => f.status === "error");
+  const hasErrors = queue.files.some((f) => f.status === "error");
   retryBtn.classList.toggle("hidden", !hasErrors);
 
   // Show convert button when auto-convert is off (or the last batch was stopped) and files are pending
-  const hasPending = files.some((f) => f.status === "pending");
+  const hasPending = queue.files.some((f) => f.status === "pending");
   convertBtn.classList.toggle(
     "hidden",
-    (isAutoConvert() && !batchStopped) || !hasPending || isConverting,
+    (isAutoConvert() && !queue.stopped) || !hasPending || queue.converting,
   );
 
   // Counts
-  const counts = countByStatus(files);
+  const counts = countByStatus(queue.files);
   countTotal.textContent = String(counts.total);
   countSuccess.textContent = String(counts.success);
   countWarning.textContent = String(counts.warning);
   warningStat.classList.toggle("hidden", counts.warning === 0);
   countError.textContent = String(counts.error);
   // Clearing mid-batch would hide files the running loop is still writing.
-  clearBtn.disabled = isConverting;
+  clearBtn.disabled = queue.converting;
   const armedText = (key: string, leaving: readonly FileEntry[], label: string) =>
     armedClear === key
       ? t("status.confirmClear", { count: String(countUndoable(leaving)) })
       : t(label);
-  clearBtn.textContent = armedText("all", files, "status.clear");
+  clearBtn.textContent = armedText("all", queue.files, "status.clear");
   clearBtn.classList.toggle("is-armed", armedClear === "all");
   clearDoneBtn.textContent = armedText(
     "done",
-    files.filter((f) => !removeCompleted([f]).length),
+    queue.files.filter((f) => !removeCompleted([f]).length),
     "status.clearDone",
   );
   clearDoneBtn.classList.toggle("is-armed", armedClear === "done");
-  stopBtn.classList.toggle("hidden", !isConverting);
-  stopBtn.disabled = stopRequested;
-  const doneCount = files.length - removeCompleted(files).length;
+  stopBtn.classList.toggle("hidden", !queue.converting);
+  stopBtn.disabled = queue.stopRequested;
+  const doneCount = queue.files.length - removeCompleted(queue.files).length;
   // Only worth a button when it clears less than "Clear list" would.
-  clearDoneBtn.classList.toggle("hidden", doneCount === 0 || doneCount === files.length);
+  clearDoneBtn.classList.toggle("hidden", doneCount === 0 || doneCount === queue.files.length);
   convertCount.textContent = counts.pending ? `(${counts.pending})` : "";
 
   // innerHTML replaces the cards, so put keyboard focus back where it was.
@@ -261,7 +234,7 @@ function render() {
   const focusedId = focused?.dataset.id;
 
   // File cards
-  fileItems.innerHTML = files
+  fileItems.innerHTML = queue.files
     .map(
       (f) => `
     <div class="file-card${f.id === selectedId ? " is-selected" : ""}${f.status === "converting" ? "" : " can-remove"}" role="listitem" data-id="${escHtml(f.id)}">
@@ -330,124 +303,6 @@ function showEmptyPreview(): void {
   selectedId = null;
   previewPane.classList.add("hidden");
   previewEmpty.classList.remove("hidden");
-}
-
-type DiffRow =
-  | { t: "equal"; conv: string }
-  | { t: "replace"; orig: string; conv: string }
-  | { t: "insert"; conv: string }
-  | { t: "delete"; orig: string };
-
-// Line-level LCS diff. zhconvert prepends a watermark block (a cue "0" +
-// "Processed by 繁化姬 … zhconvert.org") to subtitle output; a naive index
-// alignment would then mark every following line as changed. LCS treats the
-// watermark as an insertion and keeps the rest aligned.
-function diffLines(o: string[], c: string[]): DiffRow[] {
-  const n = o.length;
-  const m = c.length;
-
-  // Guard against pathological inputs (e.g. a file of single-character lines).
-  if (n * m > 4_000_000) {
-    const max = Math.max(n, m);
-    const rows: DiffRow[] = [];
-    for (let i = 0; i < max; i++) {
-      const a = o[i] ?? "";
-      const b = c[i] ?? "";
-      rows.push(a === b ? { t: "equal", conv: b } : { t: "replace", orig: a, conv: b });
-    }
-    return rows;
-  }
-
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = o[i] === c[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
-  const rows: DiffRow[] = [];
-  const dels: string[] = [];
-  const inss: string[] = [];
-  // Pair a run of deletes with the following run of inserts as char-highlighted
-  // replaces; leftovers become pure insert/delete rows.
-  const flush = () => {
-    const pairs = Math.max(dels.length, inss.length);
-    for (let p = 0; p < pairs; p++) {
-      const od = dels[p];
-      const ic = inss[p];
-      if (od !== undefined && ic !== undefined) rows.push({ t: "replace", orig: od, conv: ic });
-      else if (ic !== undefined) rows.push({ t: "insert", conv: ic });
-      else rows.push({ t: "delete", orig: od });
-    }
-    dels.length = 0;
-    inss.length = 0;
-  };
-
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (o[i] === c[j]) {
-      flush();
-      rows.push({ t: "equal", conv: c[j] });
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      dels.push(o[i++]);
-    } else {
-      inss.push(c[j++]);
-    }
-  }
-  while (i < n) dels.push(o[i++]);
-  while (j < m) inss.push(c[j++]);
-  flush();
-  return rows;
-}
-
-const segsHtml = (segs: DiffSeg[]): string =>
-  segs
-    .map((g) => (g.changed ? `<span class="chg">${escHtml(g.text)}</span>` : escHtml(g.text)))
-    .join("");
-
-// Simplified output gets a Simplified Chinese face; the bundled Noto Sans TC would draw
-// Traditional-style glyphs for characters both scripts share.
-const SIMPLIFIED_CONVERTERS = new Set(["Simplified", "China", "WikiSimplified"]);
-
-function renderDiff(
-  original: string,
-  converted: string,
-  converter: string,
-): { html: string; changedLines: number } {
-  const lang = SIMPLIFIED_CONVERTERS.has(converter) ? ' lang="zh-Hans"' : "";
-  const rows = diffLines(original.split("\n"), converted.split("\n"));
-  const out: string[] = [];
-  let changedLines = 0;
-  let ln = 0; // converted-side line number for display
-  for (const r of rows) {
-    if (r.t === "equal") {
-      ln++;
-      out.push(
-        `<div class="diff-line"><span class="diff-num">${ln}</span><div class="diff-conv"${lang}>${escHtml(r.conv) || "&nbsp;"}</div></div>`,
-      );
-    } else if (r.t === "replace") {
-      ln++;
-      changedLines++;
-      const d = inlineDiff(r.orig, r.conv);
-      out.push(
-        `<div class="diff-line changed"><span class="diff-num">${ln}</span><div><div class="diff-orig">${segsHtml(d.orig) || "&nbsp;"}</div><div class="diff-conv"${lang}>${segsHtml(d.conv)}</div></div></div>`,
-      );
-    } else if (r.t === "insert") {
-      ln++;
-      changedLines++;
-      out.push(
-        `<div class="diff-line added"><span class="diff-num">${ln}</span><div class="diff-conv"${lang}><span class="chg">${escHtml(r.conv) || "&nbsp;"}</span></div></div>`,
-      );
-    } else {
-      out.push(
-        `<div class="diff-line removed"><span class="diff-num">−</span><div class="diff-orig">${escHtml(r.orig) || "&nbsp;"}</div></div>`,
-      );
-    }
-  }
-  return { html: out.join(""), changedLines };
 }
 
 /** The convert/preview command arguments for a file, from the current settings. */
@@ -536,7 +391,7 @@ async function previewFile(file: FileEntry): Promise<void> {
       "hidden",
       saved.settings === outputSettings(readConvertParams(file)),
     );
-    reconvertBtn.disabled = isConverting;
+    reconvertBtn.disabled = queue.converting;
     return;
   }
 
@@ -544,7 +399,8 @@ async function previewFile(file: FileEntry): Promise<void> {
   previewBody.innerHTML = `<div class="preview-loading"><i aria-hidden="true" class="ti ti-loader-2"></i> ${escHtml(t("preview.loading"))}</div>`;
 
   const convertingSoon =
-    file.status === "converting" || (file.status === "pending" && isAutoConvert() && !batchStopped);
+    file.status === "converting" ||
+    (file.status === "pending" && isAutoConvert() && !queue.stopped);
   if (convertingSoon) return;
 
   try {
@@ -564,21 +420,21 @@ async function previewFile(file: FileEntry): Promise<void> {
 // Reconvert a finished file with the current settings. An overwritten file gets its
 // original back first, so the backup is never replaced by already-converted text.
 reconvertBtn.addEventListener("click", async () => {
-  const file = files.find((f) => f.id === selectedId);
-  if (!file || isConverting) return;
+  const file = queue.files.find((f) => f.id === selectedId);
+  if (!file || queue.converting) return;
   try {
     if (file.backupPath) await invoke("restore_backup", { fileId: file.id });
   } catch (err) {
-    patchFile(file.id, { status: "error", error: String(err) });
+    queue.patch(file.id, { status: "error", error: String(err) });
     render();
     return;
   }
   previewCache.delete(file.id);
-  patchFile(file.id, { status: "pending", warnings: undefined, backupPath: undefined });
+  queue.patch(file.id, { status: "pending", warnings: undefined, backupPath: undefined });
   // Start first so the file is already converting when the preview asks, and waits for
   // its own result instead of fetching one.
   void convertPending(file.id);
-  void previewFile(files.find((f) => f.id === file.id) as FileEntry);
+  void previewFile(queue.files.find((f) => f.id === file.id) as FileEntry);
 });
 
 // --- Progress ---
@@ -614,7 +470,7 @@ function addFiles(paths: string[]) {
       outputPath: "",
     };
   });
-  files = [...files, ...newFiles];
+  queue.files = [...queue.files, ...newFiles];
   render();
   // Show the diff preview for the first newly-added file so dropping a file
   // always surfaces a preview, regardless of the auto-convert setting.
@@ -644,30 +500,24 @@ async function openFiles() {
  * leaves a stopped batch stopped, so the other pending files do not start with it.
  */
 async function convertPending(only?: string) {
-  if (isConverting) return;
-
-  const pendingFiles = files.filter((f) => f.status === "pending" && (!only || f.id === only));
-  if (pendingFiles.length === 0) return;
+  const pendingFiles = queue.begin(only);
+  if (!pendingFiles) return;
 
   const totalPending = pendingFiles.length;
   let completedCount = 0;
-  let stopped = false;
 
-  const wasStopped = batchStopped;
-  isConverting = true;
-  if (!only) batchStopped = false;
   if (progressTimeout) clearTimeout(progressTimeout);
   showProgress(0);
 
   try {
     for (const file of pendingFiles) {
-      if (stopRequested) break;
+      if (queue.stopRequested) break;
       // Removed from the queue since the batch started.
-      if (!files.some((f) => f.id === file.id && f.status === "pending")) {
+      if (!queue.files.some((f) => f.id === file.id && f.status === "pending")) {
         completedCount++;
         continue;
       }
-      patchFile(file.id, { status: "converting" });
+      queue.patch(file.id, { status: "converting" });
       render();
 
       try {
@@ -687,7 +537,7 @@ async function convertPending(only?: string) {
           });
         }
 
-        patchFile(file.id, {
+        queue.patch(file.id, {
           status: "success",
           warnings: result.warnings || undefined,
           outputName: result.outputName,
@@ -695,7 +545,7 @@ async function convertPending(only?: string) {
           backupPath: result.backupPath,
         });
       } catch (err) {
-        patchFile(file.id, { status: "error", error: String(err) });
+        queue.patch(file.id, { status: "error", error: String(err) });
       }
 
       completedCount++;
@@ -703,17 +553,14 @@ async function convertPending(only?: string) {
       render();
       // The selected file may be waiting on this conversion for its preview.
       if (selectedId === file.id) {
-        const done = files.find((f) => f.id === file.id);
+        const done = queue.files.find((f) => f.id === file.id);
         if (done) void previewFile(done);
       }
     }
   } finally {
-    isConverting = false;
-    stopped = stopRequested;
-    batchStopped = stopped || (only !== undefined && wasStopped);
-    stopRequested = false;
+    queue.end(only);
     hideProgress();
-    const c = countByStatus(files);
+    const c = countByStatus(queue.files);
     announce(
       t("status.announce", {
         success: String(c.success),
@@ -723,11 +570,10 @@ async function convertPending(only?: string) {
     );
   }
 
-  // Files added mid-batch were skipped by the isConverting guard: pick them up
+  // Files added mid-batch were skipped by the queue.converting guard: pick them up
   // now, or re-render so the convert button reappears when auto-convert is off.
   render();
-  // A stopped batch leaves its files pending on purpose; don't restart it.
-  if (!batchStopped && shouldResumeConversion(files, isAutoConvert())) void convertPending();
+  if (queue.shouldResume(isAutoConvert())) void convertPending();
 }
 
 // --- Settings drawer ---
@@ -768,12 +614,12 @@ fileItems.addEventListener("click", async (e) => {
   }
   const reveal = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-reveal]");
   if (reveal) {
-    const file = files.find((f) => f.id === reveal.dataset.reveal);
+    const file = queue.files.find((f) => f.id === reveal.dataset.reveal);
     if (!file) return;
     try {
       await revealItemInDir(file.outputPath);
     } catch (err) {
-      patchFile(file.id, { status: "error", error: `REVEAL_FAILED:${err}` });
+      queue.patch(file.id, { status: "error", error: `REVEAL_FAILED:${err}` });
       render();
     }
     return;
@@ -785,9 +631,9 @@ fileItems.addEventListener("click", async (e) => {
     try {
       await invoke("restore_backup", { fileId: id });
       previewCache.delete(id ?? "");
-      patchFile(id ?? "", { status: "restored", warnings: undefined, backupPath: undefined });
+      queue.patch(id ?? "", { status: "restored", warnings: undefined, backupPath: undefined });
     } catch (err) {
-      patchFile(id ?? "", { status: "error", error: String(err) });
+      queue.patch(id ?? "", { status: "error", error: String(err) });
     }
     render();
     // The open preview still shows the converted text; show the restored original's.
@@ -797,7 +643,7 @@ fileItems.addEventListener("click", async (e) => {
   const card = (e.target as HTMLElement).closest<HTMLElement>(".file-card");
   if (!card) return;
   const id = card.getAttribute("data-id");
-  const file = files.find((f) => f.id === id);
+  const file = queue.files.find((f) => f.id === id);
   if (file) void previewFile(file);
 });
 
@@ -901,7 +747,7 @@ function syncStatusMode(): void {
 }
 /** Re-run the preview for the selected file after a setting that changes the output. */
 function refreshPreview(): void {
-  const f = selectedId ? files.find((x) => x.id === selectedId) : undefined;
+  const f = selectedId ? queue.files.find((x) => x.id === selectedId) : undefined;
   if (f) void previewFile(f);
 }
 converterSelect.addEventListener("change", () => {
@@ -992,25 +838,6 @@ document.addEventListener("keydown", (e) => {
 
 // --- Restore persisted settings ---
 
-function restoreSetting(id: string, key: string) {
-  const el = document.getElementById(id) as HTMLSelectElement | HTMLTextAreaElement | null;
-  const saved = localStorage.getItem(key);
-  if (el && saved) el.value = saved;
-}
-
-function persistOnChange(id: string, key: string) {
-  const el = document.getElementById(id) as HTMLSelectElement | HTMLTextAreaElement | null;
-  el?.addEventListener("change", () => {
-    localStorage.setItem(key, el.value);
-  });
-  // Textareas also persist on input, so a rule being typed survives closing the app.
-  if (el instanceof HTMLTextAreaElement) {
-    el.addEventListener("input", () => {
-      localStorage.setItem(key, el.value);
-    });
-  }
-}
-
 restoreSetting("converter", STORAGE_KEYS.converter);
 restoreSetting("naming", STORAGE_KEYS.naming);
 restoreSetting("pre-replace", STORAGE_KEYS.preReplace);
@@ -1052,7 +879,6 @@ for (const id of ["pre-replace", "post-replace", "protect-replace"]) {
 }
 
 // Custom save folder picker
-const SAVE_FOLDER_KEY = "fanhuaji-save-folder";
 const saveFolderSelect = document.getElementById("save-folder") as HTMLSelectElement | null;
 
 function setCustomFolder(folder: string) {
@@ -1066,12 +892,12 @@ function setCustomFolder(folder: string) {
   customOpt.value = folder;
   customOpt.textContent = folder;
   saveFolderSelect.value = folder;
-  localStorage.setItem(SAVE_FOLDER_KEY, folder);
+  localStorage.setItem(STORAGE_KEYS.saveFolder, folder);
   syncOutPill();
 }
 
 // Restore saved custom folder
-const savedFolder = localStorage.getItem(SAVE_FOLDER_KEY);
+const savedFolder = localStorage.getItem(STORAGE_KEYS.saveFolder);
 if (savedFolder && saveFolderSelect) {
   setCustomFolder(savedFolder);
 }
@@ -1085,11 +911,11 @@ saveFolderSelect?.addEventListener("change", async () => {
       setCustomFolder(folder);
     } else {
       // Cancelled — revert to previous
-      const prev = localStorage.getItem(SAVE_FOLDER_KEY);
+      const prev = localStorage.getItem(STORAGE_KEYS.saveFolder);
       saveFolderSelect.value = prev ?? "same";
     }
   } else if (saveFolderSelect.value === "same") {
-    localStorage.removeItem(SAVE_FOLDER_KEY);
+    localStorage.removeItem(STORAGE_KEYS.saveFolder);
   }
   syncOutPill();
 });
@@ -1221,28 +1047,28 @@ dropZone.addEventListener("keydown", (e) => {
 $<HTMLButtonElement>("#btn-add-more").addEventListener("click", openFiles);
 
 stopBtn.addEventListener("click", () => {
-  stopRequested = true;
+  queue.stop();
   render();
 });
 
 clearDoneBtn.addEventListener("click", () => {
-  const leaving = files.filter((f) => !removeCompleted([f]).length);
+  const leaving = queue.files.filter((f) => !removeCompleted([f]).length);
   if (!confirmUndoLoss("done", leaving)) return;
-  files = removeCompleted(files);
+  queue.files = removeCompleted(queue.files);
   render();
 });
 
 /** Remove one file from the queue; the file being converted stays. */
 function removeFile(id: string): void {
-  const target = files.filter((f) => f.id === id);
+  const target = queue.files.filter((f) => f.id === id);
   if (!confirmUndoLoss(id, target)) return;
-  files = files.filter((f) => f.id !== id || f.status === "converting");
+  queue.files = queue.files.filter((f) => f.id !== id || f.status === "converting");
   render();
 }
 
 clearBtn.addEventListener("click", () => {
-  if (!confirmUndoLoss("all", files)) return;
-  files = [];
+  if (!confirmUndoLoss("all", queue.files)) return;
+  queue.files = [];
   render();
 });
 
@@ -1251,7 +1077,7 @@ convertBtn.addEventListener("click", () => {
 });
 
 retryBtn.addEventListener("click", () => {
-  files = resetErrors(files);
+  queue.files = resetErrors(queue.files);
   render();
   void convertPending();
 });
@@ -1358,7 +1184,7 @@ updateChip.addEventListener("click", () => void installPendingUpdate());
 
 void initVersion();
 initUpdater({
-  getRisk: () => ({ converting: isConverting, undoable: countUndoable(files) }),
+  getRisk: () => ({ converting: queue.converting, undoable: countUndoable(queue.files) }),
   onAvailable: (version) => {
     availableVersion = version;
     syncUpdateChip();
@@ -1367,11 +1193,11 @@ initUpdater({
 
 /** Quit, after confirming when that would cut a batch short or lose Undo. */
 async function requestQuit(): Promise<void> {
-  const undoable = countUndoable(files);
-  if (isConverting || undoable) {
+  const undoable = countUndoable(queue.files);
+  if (queue.converting || undoable) {
     const ok = await confirmDialog({
       title: t("quit.title"),
-      body: isConverting ? t("quit.converting") : "",
+      body: queue.converting ? t("quit.converting") : "",
       warning: undoable ? t("quit.undoWarning", { count: String(undoable) }) : "",
       confirmLabel: t("quit.confirm"),
       cancelLabel: t("quit.cancel"),
@@ -1407,7 +1233,7 @@ if (localeSelect) {
     void initVersion();
     // The open preview's header and messages were built with the old locale; rebuild them
     // only when that needs no API call (saved result, error, or EPUB notice).
-    const shown = files.find((f) => f.id === selectedId);
+    const shown = queue.files.find((f) => f.id === selectedId);
     if (
       shown &&
       !previewPane.classList.contains("hidden") &&
@@ -1421,6 +1247,10 @@ if (localeSelect) {
 // Listen for EPUB chapter progress
 void listen<EpubProgressPayload>("epub-progress", (event) => {
   const { fileId, chapterIndex, chapterTotal, chapterName } = event.payload;
-  patchFile(fileId, { chapterIndex, chapterTotal, chapterName });
-  render();
+  queue.patch(fileId, { chapterIndex, chapterTotal, chapterName });
+  // Only the card's subtitle changes: a full render per event stalls a long queue.
+  const f = queue.files.find((x) => x.id === fileId);
+  const meta = fileItems.querySelector(`[data-id="${CSS.escape(fileId)}"] .fc-meta`);
+  if (f && meta) meta.innerHTML = fileMessage(f);
+  else render();
 });

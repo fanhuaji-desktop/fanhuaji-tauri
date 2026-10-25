@@ -7,6 +7,7 @@
 ### Changed
 
 - 相依套件升級到最新版：reqwest 0.13、zip 9、chardetng 1.0、Vite 8、Vitest 5、TypeScript 7、Biome 2.6 等
+- 轉換大型 EPUB 或分段檔案時，每次進度更新只改那一張卡片，不再重畫整個檔案清單
 - EPUB 重新打包時，圖片、字型等已壓縮的檔案直接存入，不再重新壓縮
 
 ### Fixed

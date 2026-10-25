@@ -155,6 +155,7 @@
   "menu.fullscreen": "進入全螢幕",
   "update.downloading": "正在下載更新…",
   "update.restarting": "下載完成，即將重新啟動…",
+  "update.waiting": "下載完成，等轉換結束後就會重新啟動…",
   "update.failed": "檢查更新失敗：{error}",
 
 

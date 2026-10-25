@@ -155,6 +155,7 @@
   "menu.fullscreen": "Enter Full Screen",
   "update.downloading": "Downloading update\u2026",
   "update.restarting": "Download complete, restarting\u2026",
+  "update.waiting": "Downloaded. Restarting once the conversion finishes\u2026",
   "update.failed": "Update check failed: {error}",
 
 

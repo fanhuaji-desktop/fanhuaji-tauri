@@ -513,9 +513,18 @@ pub(crate) fn write_atomic(
     let dir = path.parent().ok_or("NO_PARENT_DIR")?;
     let mut tmp =
         tempfile::NamedTempFile::new_in(dir).map_err(|e| format!("OUTPUT_CREATE_FAILED:{e}"))?;
-    if let Ok(meta) = std::fs::metadata(path) {
+    // NamedTempFile is created 0600; a new file gets the usual 0644 instead, so it stays
+    // readable on shared folders (NAS) like any file the user saves.
+    let perms = match std::fs::metadata(path) {
+        Ok(meta) => Some(meta.permissions()),
+        #[cfg(unix)]
+        Err(_) => Some(std::os::unix::fs::PermissionsExt::from_mode(0o644)),
+        #[cfg(not(unix))]
+        Err(_) => None,
+    };
+    if let Some(perms) = perms {
         tmp.as_file()
-            .set_permissions(meta.permissions())
+            .set_permissions(perms)
             .map_err(|e| format!("FILE_WRITE_FAILED:{e}"))?;
     }
     write(tmp.as_file_mut())?;
@@ -865,6 +874,17 @@ mod tests {
         let path = dir.path().join("a.srt");
         std::fs::write(&path, "old").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic(&path, |_| Ok(())).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_new_file_is_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.srt");
         write_atomic(&path, |_| Ok(())).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o644);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { t } from "../i18n/i18n";
+import { setLocale, t, translateError } from "../i18n/i18n";
 import {
   buildModuleOverrides,
   countByStatus,
@@ -97,7 +97,6 @@ function makeFile(overrides: Partial<FileEntry> = {}): FileEntry {
     inputPath: "/tmp",
     inputName: "test.txt",
     status: "pending",
-    message: "",
     outputName: "",
     outputPath: "",
     ...overrides,
@@ -124,8 +123,14 @@ describe("fileMessage", () => {
   });
 
   it("shows the warning for a success with warnings", () => {
-    const f = makeFile({ status: "success", message: "轉換完成（部分章節失敗（3/40））" });
-    expect(fileMessage(f)).toBe("轉換完成（部分章節失敗（3/40））");
+    const f = makeFile({ status: "success", warnings: "EPUB_PARTIAL_FAILED:3/40" });
+    expect(fileMessage(f)).toBe(
+      escHtml(
+        t("file.convertDoneWithWarnings", {
+          warnings: translateError("EPUB_PARTIAL_FAILED:3/40"),
+        }),
+      ),
+    );
   });
 
   it("names the output file for a success", () => {
@@ -142,8 +147,17 @@ describe("fileMessage", () => {
     expect(fileMessage(makeFile({ status: "restored" }))).toBe(t("file.restored"));
   });
 
+  it("translates the error in the current language", () => {
+    const f = makeFile({ status: "error", error: "HTTP_ERROR:502" });
+    const zh = fileMessage(f);
+    setLocale("en");
+    expect(fileMessage(f)).not.toBe(zh);
+    expect(fileMessage(f)).toBe(escHtml(translateError("HTTP_ERROR:502")));
+    setLocale("zh-TW");
+  });
+
   it("escapes the message", () => {
-    const f = makeFile({ status: "error", message: "<b>bad</b>" });
+    const f = makeFile({ status: "error", error: "<b>bad</b>" });
     expect(fileMessage(f)).toBe("&lt;b&gt;bad&lt;/b&gt;");
   });
 
@@ -229,17 +243,17 @@ describe("createRequestGuard", () => {
 describe("resetErrors", () => {
   it("resets error files to pending", () => {
     const files = [
-      makeFile({ id: "1", status: "error", message: "fail" }),
+      makeFile({ id: "1", status: "error", error: "fail" }),
       makeFile({ id: "2", status: "success" }),
     ];
     const result = resetErrors(files);
     expect(result[0].status).toBe("pending");
-    expect(result[0].message).toBe("");
+    expect(result[0].error).toBeUndefined();
     expect(result[1].status).toBe("success");
   });
 
   it("does not mutate original array", () => {
-    const files = [makeFile({ status: "error", message: "fail" })];
+    const files = [makeFile({ status: "error", error: "fail" })];
     const result = resetErrors(files);
     expect(files[0].status).toBe("error");
     expect(result[0].status).toBe("pending");
@@ -253,7 +267,7 @@ describe("countByStatus", () => {
       makeFile({ status: "pending" }),
       makeFile({ status: "converting" }),
       makeFile({ status: "success" }),
-      makeFile({ status: "success", message: "部分章節失敗" }),
+      makeFile({ status: "success", warnings: "EPUB_PARTIAL_FAILED:1/2" }),
       makeFile({ status: "error" }),
     ];
     expect(countByStatus(files)).toEqual({
@@ -443,7 +457,7 @@ describe("removeCompleted", () => {
       makeFile({ id: "p", status: "pending" }),
       makeFile({ id: "c", status: "converting" }),
       makeFile({ id: "s", status: "success" }),
-      makeFile({ id: "w", status: "success", message: "部分章節失敗" }),
+      makeFile({ id: "w", status: "success", warnings: "EPUB_PARTIAL_FAILED:1/2" }),
       makeFile({ id: "e", status: "error" }),
       makeFile({ id: "r", status: "restored" }),
     ];
@@ -455,7 +469,7 @@ describe("countUndoable", () => {
   it("counts only converted files that still have a backup", () => {
     const files = [
       makeFile({ status: "success", backupPath: "/b/1" }),
-      makeFile({ status: "success", backupPath: "/b/2", message: "部分章節失敗" }),
+      makeFile({ status: "success", backupPath: "/b/2", warnings: "EPUB_PARTIAL_FAILED:1/2" }),
       makeFile({ status: "success" }),
       makeFile({ status: "restored" }),
       makeFile({ status: "error", backupPath: "/b/3" }),

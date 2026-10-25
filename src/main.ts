@@ -26,6 +26,8 @@ import {
   type FileEntry,
   fileExt,
   fileMessage,
+  fileNote,
+  hasWarnings,
   inlineDiff,
   isEpubFile,
   isSafeUrl,
@@ -79,6 +81,11 @@ let batchStopped = false;
 let moduleData: ModuleInfo[] = [];
 let moduleSettings = parseStoredObject(localStorage.getItem(STORAGE_KEYS.modules));
 let activeCategory = "";
+
+/** Update one file in the queue; a file removed meanwhile stays removed. */
+function patchFile(id: string, patch: Partial<FileEntry>): void {
+  files = files.map((f) => (f.id === id ? { ...f, ...patch } : f));
+}
 
 // --- DOM ---
 
@@ -146,8 +153,7 @@ function formatBadge(name: string): string {
 }
 
 function statusIcon(f: FileEntry): string {
-  // A success with a message finished with warnings (e.g. some EPUB chapters failed).
-  if (f.status === "success" && f.message)
+  if (hasWarnings(f))
     return '<span class="status-icon warning"><i aria-hidden="true" class="ti ti-alert-triangle"></i></span>';
   switch (f.status) {
     case "pending":
@@ -191,8 +197,8 @@ function confirmUndoLoss(key: string, leaving: readonly FileEntry[]): boolean {
 
 // Card subtitles are one truncated line; the tooltip carries the full text.
 function metaTitle(f: FileEntry): string {
-  if (f.status === "error") return f.message;
-  if (f.status === "success") return f.message ? `${f.message}\n${f.outputPath}` : f.outputPath;
+  if (f.status === "error") return fileNote(f);
+  if (f.status === "success") return f.warnings ? `${fileNote(f)}\n${f.outputPath}` : f.outputPath;
   return "";
 }
 
@@ -511,7 +517,7 @@ async function previewFile(file: FileEntry): Promise<void> {
   // The conversion already failed: show why in full instead of re-running the API.
   if (file.status === "error") {
     previewStats.textContent = "";
-    previewBody.innerHTML = `<div class="preview-error"><i aria-hidden="true" class="ti ti-alert-triangle"></i> ${escHtml(file.message)}</div>`;
+    previewBody.innerHTML = `<div class="preview-error"><i aria-hidden="true" class="ti ti-alert-triangle"></i> ${escHtml(fileNote(file))}</div>`;
     return;
   }
 
@@ -563,19 +569,12 @@ reconvertBtn.addEventListener("click", async () => {
   try {
     if (file.backupPath) await invoke("restore_backup", { fileId: file.id });
   } catch (err) {
-    files = files.map((f) =>
-      f.id === file.id
-        ? { ...f, status: "error" as const, message: translateError(String(err)) }
-        : f,
-    );
+    patchFile(file.id, { status: "error", error: String(err) });
     render();
     return;
   }
   previewCache.delete(file.id);
-  files = files.map((f) =>
-    f.id === file.id ? { ...f, status: "pending" as const, message: "", backupPath: undefined } : f,
-  );
-  batchStopped = false;
+  patchFile(file.id, { status: "pending", warnings: undefined, backupPath: undefined });
   // Start first so the file is already converting when the preview asks, and waits for
   // its own result instead of fetching one.
   void convertPending(file.id);
@@ -611,7 +610,6 @@ function addFiles(paths: string[]) {
       inputPath: dir,
       inputName: name,
       status: "pending" as const,
-      message: "",
       outputName: "",
       outputPath: "",
     };
@@ -641,7 +639,10 @@ async function openFiles() {
 
 // --- Convert ---
 
-/** Convert pending files in order; `only` limits the batch to one file (Reconvert). */
+/**
+ * Convert pending files in order. `only` limits the batch to one file (Reconvert); it
+ * leaves a stopped batch stopped, so the other pending files do not start with it.
+ */
 async function convertPending(only?: string) {
   if (isConverting) return;
 
@@ -652,8 +653,9 @@ async function convertPending(only?: string) {
   let completedCount = 0;
   let stopped = false;
 
+  const wasStopped = batchStopped;
   isConverting = true;
-  batchStopped = false;
+  if (!only) batchStopped = false;
   if (progressTimeout) clearTimeout(progressTimeout);
   showProgress(0);
 
@@ -665,9 +667,7 @@ async function convertPending(only?: string) {
         completedCount++;
         continue;
       }
-      files = files.map((f) =>
-        f.id === file.id ? { ...f, status: "converting" as const, message: "" } : f,
-      );
+      patchFile(file.id, { status: "converting" });
       render();
 
       try {
@@ -687,28 +687,15 @@ async function convertPending(only?: string) {
           });
         }
 
-        files = files.map((f) =>
-          f.id === file.id
-            ? {
-                ...f,
-                status: "success" as const,
-                message: result.warnings
-                  ? t("file.convertDoneWithWarnings", {
-                      warnings: translateError(result.warnings),
-                    })
-                  : "",
-                outputName: result.outputName,
-                outputPath: result.outputPath,
-                backupPath: result.backupPath,
-              }
-            : f,
-        );
+        patchFile(file.id, {
+          status: "success",
+          warnings: result.warnings || undefined,
+          outputName: result.outputName,
+          outputPath: result.outputPath,
+          backupPath: result.backupPath,
+        });
       } catch (err) {
-        files = files.map((f) =>
-          f.id === file.id
-            ? { ...f, status: "error" as const, message: translateError(String(err)) }
-            : f,
-        );
+        patchFile(file.id, { status: "error", error: String(err) });
       }
 
       completedCount++;
@@ -723,7 +710,7 @@ async function convertPending(only?: string) {
   } finally {
     isConverting = false;
     stopped = stopRequested;
-    batchStopped = stopped;
+    batchStopped = stopped || (only !== undefined && wasStopped);
     stopRequested = false;
     hideProgress();
     const c = countByStatus(files);
@@ -740,7 +727,7 @@ async function convertPending(only?: string) {
   // now, or re-render so the convert button reappears when auto-convert is off.
   render();
   // A stopped batch leaves its files pending on purpose; don't restart it.
-  if (!stopped && shouldResumeConversion(files, isAutoConvert())) void convertPending();
+  if (!batchStopped && shouldResumeConversion(files, isAutoConvert())) void convertPending();
 }
 
 // --- Settings drawer ---
@@ -786,11 +773,7 @@ fileItems.addEventListener("click", async (e) => {
     try {
       await revealItemInDir(file.outputPath);
     } catch (err) {
-      files = files.map((f) =>
-        f.id === file.id
-          ? { ...f, status: "error" as const, message: translateError(`REVEAL_FAILED:${err}`) }
-          : f,
-      );
+      patchFile(file.id, { status: "error", error: `REVEAL_FAILED:${err}` });
       render();
     }
     return;
@@ -802,15 +785,13 @@ fileItems.addEventListener("click", async (e) => {
     try {
       await invoke("restore_backup", { fileId: id });
       previewCache.delete(id ?? "");
-      files = files.map((f) =>
-        f.id === id ? { ...f, status: "restored" as const, message: "", backupPath: undefined } : f,
-      );
+      patchFile(id ?? "", { status: "restored", warnings: undefined, backupPath: undefined });
     } catch (err) {
-      files = files.map((f) =>
-        f.id === id ? { ...f, status: "error" as const, message: translateError(String(err)) } : f,
-      );
+      patchFile(id ?? "", { status: "error", error: String(err) });
     }
     render();
+    // The open preview still shows the converted text; show the restored original's.
+    if (id === selectedId) refreshPreview();
     return;
   }
   const card = (e.target as HTMLElement).closest<HTMLElement>(".file-card");
@@ -1440,8 +1421,6 @@ if (localeSelect) {
 // Listen for EPUB chapter progress
 void listen<EpubProgressPayload>("epub-progress", (event) => {
   const { fileId, chapterIndex, chapterTotal, chapterName } = event.payload;
-  files = files.map((f) =>
-    f.id === fileId ? { ...f, chapterIndex, chapterTotal, chapterName } : f,
-  );
+  patchFile(fileId, { chapterIndex, chapterTotal, chapterName });
   render();
 });

@@ -32,15 +32,13 @@ interface UpdaterOptions {
 let options: UpdaterOptions = {};
 let pendingUpdate: Update | null = null;
 
-/** Ask, then download, install and relaunch. A running batch blocks the restart. */
-async function promptInstall(update: Update): Promise<void> {
-  const risk = options.getRisk?.() ?? { converting: false, undoable: 0 };
+function confirmUpdate(update: Update, risk: UpdateRisk): Promise<boolean> {
   const warning = risk.converting
     ? t("update.busy")
     : risk.undoable
       ? t("update.undoWarning", { count: String(risk.undoable) })
       : "";
-  const confirmed = await confirmDialog({
+  return confirmDialog({
     title: t("update.found", { version: update.version }),
     body: t("update.prompt"),
     warning,
@@ -49,14 +47,45 @@ async function promptInstall(update: Update): Promise<void> {
     cancelLabel: t("update.later"),
     blocked: risk.converting,
   });
-  if (!confirmed) return;
+}
+
+const noRisk: UpdateRisk = { converting: false, undoable: 0 };
+
+/** Resolves once no batch is running, polling while one is. */
+async function waitForIdle(): Promise<void> {
+  if (!options.getRisk?.().converting) return;
+  setUpdateStatus(t("update.waiting"));
+  while (options.getRisk?.().converting) await new Promise((r) => setTimeout(r, 500));
+  setUpdateStatus(t("update.restarting"));
+}
+
+/**
+ * Ask, then download, install and relaunch. A running batch blocks the restart. The
+ * download takes a while, so the risk is checked again before installing: a batch started
+ * meanwhile is waited out, and newly overwritten files are confirmed again. Download and
+ * install are separate because installing on Windows quits the app right away.
+ */
+async function promptInstall(update: Update): Promise<void> {
+  const risk = options.getRisk?.() ?? noRisk;
+  if (!(await confirmUpdate(update, risk))) return;
 
   setUpdateStatus(t("update.downloading"));
-  await update.downloadAndInstall((event) => {
+  await update.download((event) => {
     if (event.event === "Finished") {
       setUpdateStatus(t("update.restarting"));
     }
   });
+  let warned = risk.undoable;
+  for (;;) {
+    await waitForIdle();
+    const now = options.getRisk?.() ?? noRisk;
+    if (now.undoable <= warned) break;
+    if (!(await confirmUpdate(update, now))) return;
+    warned = now.undoable;
+  }
+  // shortcut: a batch started during install() itself (about a second) is still cut off by
+  // the relaunch; block convertPending while installing if that ever shows up.
+  await update.install();
   await relaunch();
 }
 

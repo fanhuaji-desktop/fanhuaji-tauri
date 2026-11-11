@@ -1167,12 +1167,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "fanhuaji-tauri"
-version = "2.5.3"
+name = "fanhuaji-core"
+version = "0.1.0"
 dependencies = [
  "chardetng",
  "encoding_rs",
  "quick-xml",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "zip 9.1.0",
+]
+
+[[package]]
+name = "fanhuaji-tauri"
+version = "2.5.3"
+dependencies = [
+ "fanhuaji-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -1182,9 +1195,6 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
- "tempfile",
- "tokio",
- "zip 9.1.0",
 ]
 
 [[package]]

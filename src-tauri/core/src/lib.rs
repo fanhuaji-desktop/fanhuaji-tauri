@@ -51,16 +51,16 @@ struct Revisions {
 
 #[derive(Debug, Serialize)]
 pub struct ModuleInfo {
-    key: String,
-    name: String,
-    description: String,
-    category: String,
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub category: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ServiceInfo {
-    modules: Vec<ModuleInfo>,
-    dict_version: String,
+    pub modules: Vec<ModuleInfo>,
+    pub dict_version: String,
 }
 
 #[derive(Serialize)]

@@ -59,7 +59,7 @@ jobs:
         working-directory: src-tauri
         run: |
           mkdir -p ../coverage
-          cargo llvm-cov --lcov --output-path ../coverage/lcov-rust.info --ignore-filename-regex "(main\.rs|commands\.rs|/tests/)"
+          cargo llvm-cov --workspace --lcov --output-path ../coverage/lcov-rust.info --ignore-filename-regex "(main\.rs|commands\.rs|convert\.rs|/tests/)"
       - uses: codecov/codecov-action@v7
         with:
           files: coverage/lcov-rust.info
